@@ -2444,6 +2444,9 @@ type PodSpec struct {
 	// The higher the value, the higher the priority.
 	// +optional
 	Priority *int32
+	// TODO(mrhohn): add comments.
+	// +optional
+	DNSParams *PodDNSParams
 }
 
 // HostAlias holds the mapping between IP and hostnames that will be injected as an entry in the
@@ -2531,6 +2534,33 @@ const (
 	PodQOSBurstable PodQOSClass = "Burstable"
 	// PodQOSBestEffort is the BestEffort qos class.
 	PodQOSBestEffort PodQOSClass = "BestEffort"
+)
+
+// TODO(mrhohn): add comments
+type PodDNSParams struct {
+	Custom PodDNSParamsCustom
+}
+
+// TODO(mrhohn): add comments
+type PodDNSParamsCustom struct {
+	// TODO(mrhohn): add comments
+	Nameservers []string
+	// TODO(mrhohn): add comments
+	Searches []string
+	// TODO(mrhohn): add comments
+	Options []string
+	// TODO(mrhohn): add comments
+	ExcludeHostSearchPaths bool
+}
+
+// TODO(mrhohn): add comments
+type DNSParamsSubstitution string
+
+const (
+	// TODO(mrhohn): add comments
+	DNSParamsSearchPathNamespace DNSParamsSubstitution = "$(NAMESPACE)"
+	// TODO(mrhohn): add comments
+	DNSParamsSearchPathClusterDomain DNSParamsSubstitution = "$(CLUSTER_SUBDOMAIN)"
 )
 
 // PodStatus represents information about the status of a pod. Status may trail the actual

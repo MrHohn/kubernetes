@@ -2755,6 +2755,9 @@ type PodSpec struct {
 	// The higher the value, the higher the priority.
 	// +optional
 	Priority *int32 `json:"priority,omitempty" protobuf:"bytes,25,opt,name=priority"`
+	// TODO(mrhohn): add comments.
+	// +optional
+	DNSParams *PodDNSParams `json:"dnsParams,omitempty" protobuf:"bytes,26,opt,name=dnsParams"`
 }
 
 // HostAlias holds the mapping between IP and hostnames that will be injected as an entry in the
@@ -2820,6 +2823,33 @@ const (
 	PodQOSBurstable PodQOSClass = "Burstable"
 	// PodQOSBestEffort is the BestEffort qos class.
 	PodQOSBestEffort PodQOSClass = "BestEffort"
+)
+
+// TODO(mrhohn): add comments
+type PodDNSParams struct {
+	Custom PodDNSParamsCustom `json:"custom,omitempty" protobuf:"bytes,1,opt,name=custom"`
+}
+
+// TODO(mrhohn): add comments
+type PodDNSParamsCustom struct {
+	// TODO(mrhohn): add comments
+	Nameservers []string `json:"nameservers,omitempty" protobuf:"bytes,1,opt,name=nameservers"`
+	// TODO(mrhohn): add comments
+	Searches []string `json:"searches,omitempty" protobuf:"bytes,2,opt,name=searches"`
+	// TODO(mrhohn): add comments
+	Options []string `json:"options,omitempty" protobuf:"bytes,3,opt,name=options"`
+	// TODO(mrhohn): add comments
+	ExcludeHostSearchPaths bool `json:"excludeHostSearchPaths,omitempty" protobuf:"bytes,4,opt,name=excludeHostSearchPaths"`
+}
+
+// TODO(mrhohn): add comments
+type DNSParamsSubstitution string
+
+const (
+	// TODO(mrhohn): add comments
+	DNSParamsSearchPathNamespace DNSParamsSubstitution = "$(NAMESPACE)"
+	// TODO(mrhohn): add comments
+	DNSParamsSearchPathClusterDomain DNSParamsSubstitution = "$(CLUSTER_SUBDOMAIN)"
 )
 
 // PodStatus represents information about the status of a pod. Status may trail the actual
