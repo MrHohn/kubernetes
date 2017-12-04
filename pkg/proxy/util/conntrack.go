@@ -18,7 +18,6 @@ package util
 
 import (
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 
@@ -28,15 +27,6 @@ import (
 // Utilities for dealing with conntrack
 
 const NoConnectionToDelete = "0 flow entries have been deleted"
-
-func IsIPv6(netIP net.IP) bool {
-	return netIP != nil && netIP.To4() == nil
-}
-
-func IsIPv6String(ip string) bool {
-	netIP := net.ParseIP(ip)
-	return IsIPv6(netIP)
-}
 
 func parametersWithFamily(isIPv6 bool, parameters ...string) []string {
 	if isIPv6 {

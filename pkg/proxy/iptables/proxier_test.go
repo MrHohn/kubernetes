@@ -392,9 +392,9 @@ func NewFakeProxier(ipt utiliptables.Interface) *Proxier {
 	p := &Proxier{
 		exec:                     &fakeexec.FakeExec{},
 		serviceMap:               make(proxyServiceMap),
-		serviceChanges:           newServiceChangeMap(),
+		serviceChanges:           newServiceChangeMap(false, nil),
 		endpointsMap:             make(proxyEndpointsMap),
-		endpointsChanges:         newEndpointsChangeMap(testHostname),
+		endpointsChanges:         newEndpointsChangeMap(testHostname, false, nil),
 		iptables:                 ipt,
 		clusterCIDR:              "10.0.0.0/24",
 		hostname:                 testHostname,
@@ -1302,7 +1302,7 @@ func TestBuildServiceMapServiceUpdate(t *testing.T) {
 	}
 }
 
-func Test_getLocalIPs(t *testing.T) {
+func TestGetLocalIPs(t *testing.T) {
 	testCases := []struct {
 		endpointsMap map[proxy.ServicePortName][]*endpointsInfo
 		expected     map[types.NamespacedName]sets.String
@@ -1389,10 +1389,13 @@ func Test_getLocalIPs(t *testing.T) {
 }
 
 // This is a coarse test, but it offers some modicum of confidence as the code is evolved.
-func Test_endpointsToEndpointsMap(t *testing.T) {
+func TestEndpointsToEndpointsMap(t *testing.T) {
+	epChangeMap := newEndpointsChangeMap("host", false, nil)
+
 	testCases := []struct {
 		newEndpoints *api.Endpoints
-		expected     map[proxy.ServicePortName][]*endpointsInfo
+		expected     proxyEndpointsMap
+		isIPv6Mode   bool
 	}{{
 		// Case[0]: nothing
 		newEndpoints: makeTestEndpoints("ns1", "ep1", func(ept *api.Endpoints) {}),
@@ -1550,11 +1553,69 @@ func Test_endpointsToEndpointsMap(t *testing.T) {
 				{endpoint: "1.1.1.1:22", isLocal: false},
 			},
 		},
+	}, {
+		// Case[9]: should omit IPv6 address in IPv4 mode
+		newEndpoints: makeTestEndpoints("ns1", "ep1", func(ept *api.Endpoints) {
+			ept.Subsets = []api.EndpointSubset{
+				{
+					Addresses: []api.EndpointAddress{{
+						IP: "1.1.1.1",
+					}, {
+						IP: "2001:db8:85a3:0:0:8a2e:370:7334",
+					}},
+					Ports: []api.EndpointPort{{
+						Name: "p1",
+						Port: 11,
+					}, {
+						Name: "p2",
+						Port: 22,
+					}},
+				},
+			}
+		}),
+		expected: map[proxy.ServicePortName][]*endpointsInfo{
+			makeServicePortName("ns1", "ep1", "p1"): {
+				{endpoint: "1.1.1.1:11", isLocal: false},
+			},
+			makeServicePortName("ns1", "ep1", "p2"): {
+				{endpoint: "1.1.1.1:22", isLocal: false},
+			},
+		},
+	}, {
+		// Case[10]: should omit IPv4 address in IPv6 mode
+		newEndpoints: makeTestEndpoints("ns1", "ep1", func(ept *api.Endpoints) {
+			ept.Subsets = []api.EndpointSubset{
+				{
+					Addresses: []api.EndpointAddress{{
+						IP: "1.1.1.1",
+					}, {
+						IP: "2001:db8:85a3:0:0:8a2e:370:7334",
+					}},
+					Ports: []api.EndpointPort{{
+						Name: "p1",
+						Port: 11,
+					}, {
+						Name: "p2",
+						Port: 22,
+					}},
+				},
+			}
+		}),
+		expected: map[proxy.ServicePortName][]*endpointsInfo{
+			makeServicePortName("ns1", "ep1", "p1"): {
+				{endpoint: "[2001:db8:85a3:0:0:8a2e:370:7334]:11", isLocal: false},
+			},
+			makeServicePortName("ns1", "ep1", "p2"): {
+				{endpoint: "[2001:db8:85a3:0:0:8a2e:370:7334]:22", isLocal: false},
+			},
+		},
+		isIPv6Mode: true,
 	}}
 
 	for tci, tc := range testCases {
+		epChangeMap.isIPv6Mode = tc.isIPv6Mode
 		// outputs
-		newEndpoints := endpointsToEndpointsMap(tc.newEndpoints, "host")
+		newEndpoints := epChangeMap.endpointsToEndpointsMap(tc.newEndpoints)
 
 		if len(newEndpoints) != len(tc.expected) {
 			t.Errorf("[%d] expected %d new, got %d: %v", tci, len(tc.expected), len(newEndpoints), spew.Sdump(newEndpoints))
@@ -1632,7 +1693,7 @@ func compareEndpointsMaps(t *testing.T, tci int, newMap, expected map[proxy.Serv
 	}
 }
 
-func Test_updateEndpointsMap(t *testing.T) {
+func TestUpdateEndpointsMap(t *testing.T) {
 	var nodeName = testHostname
 
 	emptyEndpoint := func(ept *api.Endpoints) {
@@ -2491,6 +2552,208 @@ func Test_updateEndpointsMap(t *testing.T) {
 		}
 		if !reflect.DeepEqual(result.hcEndpoints, tc.expectedHealthchecks) {
 			t.Errorf("[%d] expected healthchecks %v, got %v", tci, tc.expectedHealthchecks, result.hcEndpoints)
+		}
+	}
+}
+
+// TestServiceToServiceMapIncorrectIPVersion only verifies whether IP
+// version is correct. Incorrect IP version case in externalIPs and
+// loadBalancerSourceRanges should be filtered out. If clusterIP has
+// incorrect IP version, service itself should be filtered out.
+func TestServiceToServiceMapIncorrectIPVersion(t *testing.T) {
+	svcChangeMap := newServiceChangeMap(false, nil)
+
+	testSvcName := "testIncorrectIPVersion"
+	testSvcNamespace := "test"
+	testSvcPort := int32(12345)
+	testSvcPortName := "testPort"
+	testSvcProtocol := api.ProtocolTCP
+	testSvcNamespacedName := types.NamespacedName{Namespace: testSvcNamespace, Name: testSvcName}
+	testSvcMapKey := proxy.ServicePortName{NamespacedName: testSvcNamespacedName, Port: testSvcPortName}
+
+	testClusterIPv4 := "10.0.0.1"
+	testExternalIPv4 := "8.8.8.8"
+	testSourceRangeIPv4 := "0.0.0.0/1"
+	testClusterIPv6 := "2001:db8:85a3:0:0:8a2e:370:7334"
+	testExternalIPv6 := "2001:db8:85a3:0:0:8a2e:370:7335"
+	testSourceRangeIPv6 := "2001:db8::/32"
+
+	testCases := []struct {
+		desc               string
+		newService         *api.Service
+		isIPv6Mode         bool
+		expectedServiceMap proxyServiceMap
+	}{
+		{
+			desc: "service with ipv6 clusterIP under ipv4 mode, service should be filtered",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP: testClusterIPv6,
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+		},
+		{
+			desc: "service with ipv4 clusterIP under ipv6 mode, service should be filtered",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP: testClusterIPv4,
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+			isIPv6Mode: true,
+		},
+		{
+			desc: "service with ipv4 configurations under ipv4 mode",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP:                testClusterIPv4,
+					ExternalIPs:              []string{testExternalIPv4},
+					LoadBalancerSourceRanges: []string{testSourceRangeIPv4},
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+			expectedServiceMap: proxyServiceMap{
+				testSvcMapKey: &serviceInfo{
+					externalIPs:              []string{testExternalIPv4},
+					loadBalancerSourceRanges: []string{testSourceRangeIPv4},
+				},
+			},
+		},
+		{
+			desc: "valid service with ipv6 configurations under ipv6 mode",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP:                testClusterIPv6,
+					ExternalIPs:              []string{testExternalIPv6},
+					LoadBalancerSourceRanges: []string{testSourceRangeIPv6},
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+			expectedServiceMap: proxyServiceMap{
+				testSvcMapKey: &serviceInfo{
+					externalIPs:              []string{testExternalIPv6},
+					loadBalancerSourceRanges: []string{testSourceRangeIPv6},
+				},
+			},
+			isIPv6Mode: true,
+		},
+		{
+			desc: "service with both ipv4 and ipv6 configurations under ipv4 mode, ipv6 fields should be filtered",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP:                testClusterIPv4,
+					ExternalIPs:              []string{testExternalIPv4, testExternalIPv6},
+					LoadBalancerSourceRanges: []string{testSourceRangeIPv4, testSourceRangeIPv6},
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+			expectedServiceMap: proxyServiceMap{
+				testSvcMapKey: &serviceInfo{
+					externalIPs:              []string{testExternalIPv4},
+					loadBalancerSourceRanges: []string{testSourceRangeIPv4},
+				},
+			},
+		},
+		{
+			desc: "service with both ipv4 and ipv6 configurations under ipv6 mode, ipv4 fields should be filtered",
+			newService: &api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSvcName,
+					Namespace: testSvcNamespace,
+				},
+				Spec: api.ServiceSpec{
+					ClusterIP:                testClusterIPv6,
+					ExternalIPs:              []string{testExternalIPv4, testExternalIPv6},
+					LoadBalancerSourceRanges: []string{testSourceRangeIPv4, testSourceRangeIPv6},
+					Ports: []api.ServicePort{
+						{
+							Name:     testSvcPortName,
+							Port:     testSvcPort,
+							Protocol: testSvcProtocol,
+						},
+					},
+				},
+			},
+			expectedServiceMap: proxyServiceMap{
+				testSvcMapKey: &serviceInfo{
+					externalIPs:              []string{testExternalIPv6},
+					loadBalancerSourceRanges: []string{testSourceRangeIPv6},
+				},
+			},
+			isIPv6Mode: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		svcChangeMap.isIPv6Mode = tc.isIPv6Mode
+
+		newServiceMap := svcChangeMap.serviceToServiceMap(tc.newService)
+		if len(newServiceMap) != len(tc.expectedServiceMap) {
+			t.Errorf("%v: expected %d entries, got %d: %v", tc.desc, len(tc.expectedServiceMap), len(newServiceMap), spew.Sdump(newServiceMap))
+		}
+		for key, value := range tc.expectedServiceMap {
+			newValue, ok := newServiceMap[key]
+			if !ok || newValue == nil {
+				t.Errorf("%v: expected key %v in %v", tc.desc, key, spew.Sdump(newServiceMap))
+				continue
+			}
+			if !sets.NewString(newValue.externalIPs...).Equal(sets.NewString(value.externalIPs...)) {
+				t.Errorf("%v: expected externalIPs=%v, got %v", tc.desc, value.externalIPs, newValue.externalIPs)
+			}
+			if !sets.NewString(newValue.loadBalancerSourceRanges...).Equal(sets.NewString(value.loadBalancerSourceRanges...)) {
+				t.Errorf("%v: expected loadBalancerSourceRanges=%v, got %v", tc.desc, value.loadBalancerSourceRanges, newValue.loadBalancerSourceRanges)
+			}
 		}
 	}
 }

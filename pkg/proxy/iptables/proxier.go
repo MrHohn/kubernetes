@@ -189,7 +189,7 @@ func (e *endpointsInfo) String() string {
 }
 
 // returns a new serviceInfo struct
-func newServiceInfo(svcPortName proxy.ServicePortName, port *api.ServicePort, service *api.Service) *serviceInfo {
+func (scm *serviceChangeMap) newServiceInfo(svcPortName proxy.ServicePortName, port *api.ServicePort, service *api.Service) *serviceInfo {
 	onlyNodeLocalEndpoints := false
 	if utilfeature.DefaultFeatureGate.Enabled(features.ExternalTrafficLocalOnly) &&
 		apiservice.RequestsOnlyLocalTraffic(service) {
@@ -209,13 +209,26 @@ func newServiceInfo(svcPortName proxy.ServicePortName, port *api.ServicePort, se
 		loadBalancerStatus:       *helper.LoadBalancerStatusDeepCopy(&service.Status.LoadBalancer),
 		sessionAffinityType:      service.Spec.SessionAffinity,
 		stickyMaxAgeSeconds:      stickyMaxAgeSeconds,
-		externalIPs:              make([]string, len(service.Spec.ExternalIPs)),
-		loadBalancerSourceRanges: make([]string, len(service.Spec.LoadBalancerSourceRanges)),
+		externalIPs:              []string{},
+		loadBalancerSourceRanges: []string{},
 		onlyNodeLocalEndpoints:   onlyNodeLocalEndpoints,
 	}
 
-	copy(info.loadBalancerSourceRanges, service.Spec.LoadBalancerSourceRanges)
-	copy(info.externalIPs, service.Spec.ExternalIPs)
+	// Filter out the incorrect IP version case.
+	for _, externalIP := range service.Spec.ExternalIPs {
+		if utilproxy.IsIPv6String(externalIP) != scm.isIPv6Mode {
+			logAndEmitIncorrectIPVersionEvent(scm.recorder, "externalIPs", externalIP, service.Namespace, service.Name, service.UID)
+			continue
+		}
+		info.externalIPs = append(info.externalIPs, externalIP)
+	}
+	for _, sourceRange := range service.Spec.LoadBalancerSourceRanges {
+		if utilproxy.IsIPv6CIDR(sourceRange) != scm.isIPv6Mode {
+			logAndEmitIncorrectIPVersionEvent(scm.recorder, "loadBalancerSourceRanges", sourceRange, service.Namespace, service.Name, service.UID)
+			continue
+		}
+		info.loadBalancerSourceRanges = append(info.loadBalancerSourceRanges, sourceRange)
+	}
 
 	if apiservice.NeedsHealthCheck(service) {
 		p := service.Spec.HealthCheckNodePort
@@ -242,9 +255,11 @@ type endpointsChange struct {
 }
 
 type endpointsChangeMap struct {
-	lock     sync.Mutex
-	hostname string
-	items    map[types.NamespacedName]*endpointsChange
+	lock       sync.Mutex
+	hostname   string
+	isIPv6Mode bool
+	recorder   record.EventRecorder
+	items      map[types.NamespacedName]*endpointsChange
 }
 
 type serviceChange struct {
@@ -253,8 +268,10 @@ type serviceChange struct {
 }
 
 type serviceChangeMap struct {
-	lock  sync.Mutex
-	items map[types.NamespacedName]*serviceChange
+	lock       sync.Mutex
+	isIPv6Mode bool
+	recorder   record.EventRecorder
+	items      map[types.NamespacedName]*serviceChange
 }
 
 type updateEndpointMapResult struct {
@@ -271,10 +288,12 @@ type updateServiceMapResult struct {
 type proxyServiceMap map[proxy.ServicePortName]*serviceInfo
 type proxyEndpointsMap map[proxy.ServicePortName][]*endpointsInfo
 
-func newEndpointsChangeMap(hostname string) endpointsChangeMap {
+func newEndpointsChangeMap(hostname string, isIPv6Mode bool, recorder record.EventRecorder) endpointsChangeMap {
 	return endpointsChangeMap{
-		hostname: hostname,
-		items:    make(map[types.NamespacedName]*endpointsChange),
+		hostname:   hostname,
+		isIPv6Mode: isIPv6Mode,
+		recorder:   recorder,
+		items:      make(map[types.NamespacedName]*endpointsChange),
 	}
 }
 
@@ -285,19 +304,21 @@ func (ecm *endpointsChangeMap) update(namespacedName *types.NamespacedName, prev
 	change, exists := ecm.items[*namespacedName]
 	if !exists {
 		change = &endpointsChange{}
-		change.previous = endpointsToEndpointsMap(previous, ecm.hostname)
+		change.previous = ecm.endpointsToEndpointsMap(previous)
 		ecm.items[*namespacedName] = change
 	}
-	change.current = endpointsToEndpointsMap(current, ecm.hostname)
+	change.current = ecm.endpointsToEndpointsMap(current)
 	if reflect.DeepEqual(change.previous, change.current) {
 		delete(ecm.items, *namespacedName)
 	}
 	return len(ecm.items) > 0
 }
 
-func newServiceChangeMap() serviceChangeMap {
+func newServiceChangeMap(isIPv6Mode bool, recorder record.EventRecorder) serviceChangeMap {
 	return serviceChangeMap{
-		items: make(map[types.NamespacedName]*serviceChange),
+		isIPv6Mode: isIPv6Mode,
+		recorder:   recorder,
+		items:      make(map[types.NamespacedName]*serviceChange),
 	}
 }
 
@@ -308,10 +329,10 @@ func (scm *serviceChangeMap) update(namespacedName *types.NamespacedName, previo
 	change, exists := scm.items[*namespacedName]
 	if !exists {
 		change = &serviceChange{}
-		change.previous = serviceToServiceMap(previous)
+		change.previous = scm.serviceToServiceMap(previous)
 		scm.items[*namespacedName] = change
 	}
-	change.current = serviceToServiceMap(current)
+	change.current = scm.serviceToServiceMap(current)
 	if reflect.DeepEqual(change.previous, change.current) {
 		delete(scm.items, *namespacedName)
 	}
@@ -466,6 +487,8 @@ func NewProxier(ipt utiliptables.Interface,
 
 	if len(clusterCIDR) == 0 {
 		glog.Warningf("clusterCIDR not specified, unable to distinguish between internal and external traffic")
+	} else if utilproxy.IsIPv6CIDR(clusterCIDR) != ipt.IsIpv6() {
+		return nil, fmt.Errorf("clusterCIDR %s has incorrect IP version", clusterCIDR)
 	}
 
 	healthChecker := healthcheck.NewServer(hostname, recorder, nil, nil) // use default implementations of deps
@@ -473,9 +496,9 @@ func NewProxier(ipt utiliptables.Interface,
 	proxier := &Proxier{
 		portsMap:                 make(map[utilproxy.LocalPort]utilproxy.Closeable),
 		serviceMap:               make(proxyServiceMap),
-		serviceChanges:           newServiceChangeMap(),
+		serviceChanges:           newServiceChangeMap(ipt.IsIpv6(), recorder),
 		endpointsMap:             make(proxyEndpointsMap),
-		endpointsChanges:         newEndpointsChangeMap(hostname),
+		endpointsChanges:         newEndpointsChangeMap(hostname, ipt.IsIpv6(), recorder),
 		iptables:                 ipt,
 		masqueradeAll:            masqueradeAll,
 		masqueradeMark:           masqueradeMark,
@@ -838,7 +861,7 @@ func getLocalIPs(endpointsMap proxyEndpointsMap) map[types.NamespacedName]sets.S
 // This function is used for incremental updated of endpointsMap.
 //
 // NOTE: endpoints object should NOT be modified.
-func endpointsToEndpointsMap(endpoints *api.Endpoints, hostname string) proxyEndpointsMap {
+func (ecm *endpointsChangeMap) endpointsToEndpointsMap(endpoints *api.Endpoints) proxyEndpointsMap {
 	if endpoints == nil {
 		return nil
 	}
@@ -864,9 +887,16 @@ func endpointsToEndpointsMap(endpoints *api.Endpoints, hostname string) proxyEnd
 					glog.Warningf("ignoring invalid endpoint port %s with empty host", port.Name)
 					continue
 				}
+				// Filter out the incorrect IP version case.
+				if utilproxy.IsIPv6String(addr.IP) != ecm.isIPv6Mode {
+					// Note: Put in an empty UID here because we'd like to emit event on
+					// the corresponding service, which has a different UID than endpoints.
+					logAndEmitIncorrectIPVersionEvent(ecm.recorder, "endpoints", addr.IP, endpoints.Name, endpoints.Namespace, "")
+					continue
+				}
 				epInfo := &endpointsInfo{
 					endpoint: net.JoinHostPort(addr.IP, strconv.Itoa(int(port.Port))),
-					isLocal:  addr.NodeName != nil && *addr.NodeName == hostname,
+					isLocal:  addr.NodeName != nil && *addr.NodeName == ecm.hostname,
 				}
 				endpointsMap[svcPortName] = append(endpointsMap[svcPortName], epInfo)
 			}
@@ -885,7 +915,7 @@ func endpointsToEndpointsMap(endpoints *api.Endpoints, hostname string) proxyEnd
 // Translates single Service object to proxyServiceMap.
 //
 // NOTE: service object should NOT be modified.
-func serviceToServiceMap(service *api.Service) proxyServiceMap {
+func (scm *serviceChangeMap) serviceToServiceMap(service *api.Service) proxyServiceMap {
 	if service == nil {
 		return nil
 	}
@@ -894,11 +924,19 @@ func serviceToServiceMap(service *api.Service) proxyServiceMap {
 		return nil
 	}
 
+	if len(service.Spec.ClusterIP) != 0 {
+		// Filter out the incorrect IP version case.
+		if utilproxy.IsIPv6String(service.Spec.ClusterIP) != scm.isIPv6Mode {
+			logAndEmitIncorrectIPVersionEvent(scm.recorder, "clusterIP", service.Spec.ClusterIP, service.Namespace, service.Name, service.UID)
+			return nil
+		}
+	}
+
 	serviceMap := make(proxyServiceMap)
 	for i := range service.Spec.Ports {
 		servicePort := &service.Spec.Ports[i]
 		svcPortName := proxy.ServicePortName{NamespacedName: svcName, Port: servicePort.Name}
-		serviceMap[svcPortName] = newServiceInfo(svcPortName, servicePort, service)
+		serviceMap[svcPortName] = scm.newServiceInfo(svcPortName, servicePort, service)
 	}
 	return serviceMap
 }
@@ -1753,4 +1791,18 @@ func openLocalPort(lp *utilproxy.LocalPort) (utilproxy.Closeable, error) {
 	}
 	glog.V(2).Infof("Opened local port %s", lp.String())
 	return socket, nil
+}
+
+func logAndEmitIncorrectIPVersionEvent(recorder record.EventRecorder, fieldName, fieldValue, svcNamespace, svcName string, svcUID types.UID) {
+	errMsg := fmt.Sprintf("%s in %s has incorrect IP version", fieldValue, fieldName)
+	glog.Errorf("%s (service %s/%s).", errMsg, svcNamespace, svcName)
+	if recorder != nil {
+		recorder.Eventf(
+			&v1.ObjectReference{
+				Kind:      "Service",
+				Name:      svcName,
+				Namespace: svcNamespace,
+				UID:       svcUID,
+			}, v1.EventTypeWarning, "KubeProxyIncorrectIPVersion", errMsg)
+	}
 }

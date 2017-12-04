@@ -26,6 +26,22 @@ import (
 	"github.com/golang/glog"
 )
 
+func IsIPv6(netIP net.IP) bool {
+	return netIP != nil && netIP.To4() == nil
+}
+
+func IsIPv6String(ip string) bool {
+	netIP := net.ParseIP(ip)
+	return IsIPv6(netIP)
+}
+
+// IsIPv6CIDR returns if cidr is IPv6.
+// This assumes cidr is a valid CIDR.
+func IsIPv6CIDR(cidr string) bool {
+	ip, _, _ := net.ParseCIDR(cidr)
+	return IsIPv6(ip)
+}
+
 func IsLocalIP(ip string) (bool, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
