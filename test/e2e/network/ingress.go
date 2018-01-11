@@ -18,6 +18,7 @@ package network
 
 import (
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -151,6 +152,69 @@ var _ = SIGDescribe("Loadbalancing: L7", func() {
 			// restarter.restart()
 			// By("should continue serving on provided static-ip for 30 seconds")
 			// framework.ExpectNoError(jig.verifyURL(fmt.Sprintf("https://%v/", ip), "", 30, 1*time.Second, httpClient))
+		})
+
+		// 791.213 seconds.
+		It("should create and update ingress rules", func() {
+			// Clone from conformace test step 1 and 4.
+			manifestPath := filepath.Join(framework.IngressManifestPath, "http")
+			// These constants match the manifests used in IngressManifestPath
+			updateURLMapHost := "bar.baz.com"
+			updateURLMapPath := "/testurl"
+			emptyAnnotations := map[string]string{}
+
+			By("should create a basic HTTP ingress")
+			jig.CreateIngress(manifestPath, ns, emptyAnnotations, emptyAnnotations)
+			By("waiting for urls on basic HTTP ingress")
+			jig.WaitForIngress(true)
+
+			By(fmt.Sprintf("should update url map for host %v to expose a single url: %v", updateURLMapHost, updateURLMapPath))
+			previousPath := jig.UpdateHostPath(updateURLMapHost, updateURLMapPath)
+			By("Checking that " + previousPath + " is not exposed by polling for failure")
+			route := fmt.Sprintf("http://%v%v", jig.Address, previousPath)
+			framework.ExpectNoError(framework.PollURL(route, updateURLMapHost, framework.LoadBalancerCleanupTimeout, jig.PollInterval, &http.Client{Timeout: framework.IngressReqTimeout}, true))
+			By("Waiting for path updates to reflect in L7")
+			jig.WaitForIngress(true)
+		})
+
+		// 959.569 seconds.
+		It("should create and update ingress with TLS", func() {
+			// Clone from conformace test step 2 and 3.
+			manifestPath := filepath.Join(framework.IngressManifestPath, "http")
+			// These constants match the manifests used in IngressManifestPath
+			tlsHost := "foo.bar.com"
+			tlsSecretName := "foo"
+			updatedTLSHost := "foobar.com"
+			emptyAnnotations := map[string]string{}
+
+			By(fmt.Sprintf("should terminate TLS for host %v", tlsHost))
+			jig.CreateIngress(manifestPath, ns, emptyAnnotations, emptyAnnotations)
+			jig.AddHTTPS(tlsSecretName, tlsHost)
+			By(fmt.Sprintf("waiting for HTTPS updates to reflect in ingress"))
+			jig.WaitForIngress(true)
+
+			By(fmt.Sprintf("should update SSL certificate with modified hostname %v", updatedTLSHost))
+			jig.UpdateHTTPS(tlsSecretName, tlsHost, updatedTLSHost)
+			By(fmt.Sprintf("Waiting for updated certificates to accept requests for host %v", updatedTLSHost))
+			jig.WaitForIngress(true)
+		})
+
+		It("should have correct configuration on cloud resources", func() {
+			// Verify all cloud resources (using annotations attached to ingress):
+			// - forwarding rule
+			// - health check
+			// - firewall rule
+			// - backend service
+			// - instance group
+			// - url map
+			// - target proxy
+		})
+
+		It("should work with pre-shared-cert annotation", func() {
+		})
+
+		// Low priority.
+		It("should only process ingress with correct IngressClass", func() {
 		})
 
 		It("multicluster ingress should get instance group annotation", func() {
