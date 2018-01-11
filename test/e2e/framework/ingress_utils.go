@@ -43,6 +43,7 @@ import (
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -153,61 +154,92 @@ func CreateIngressComformanceTests(jig *IngressTestJig, ns string, annotations m
 		},
 		{
 			fmt.Sprintf("should update SSL certificate with modified hostname %v", updatedTLSHost),
-			func() {
-				jig.Update(func(ing *extensions.Ingress) {
-					newRules := []extensions.IngressRule{}
-					for _, rule := range ing.Spec.Rules {
-						if rule.Host != tlsHost {
-							newRules = append(newRules, rule)
-							continue
-						}
-						newRules = append(newRules, extensions.IngressRule{
-							Host:             updatedTLSHost,
-							IngressRuleValue: rule.IngressRuleValue,
-						})
-					}
-					ing.Spec.Rules = newRules
-				})
-				jig.AddHTTPS(tlsSecretName, updatedTLSHost)
-			},
+			func() { jig.UpdateHTTPS(tlsSecretName, tlsHost, updatedTLSHost) },
 			fmt.Sprintf("Waiting for updated certificates to accept requests for host %v", updatedTLSHost),
 		},
 		{
 			fmt.Sprintf("should update url map for host %v to expose a single url: %v", updateURLMapHost, updateURLMapPath),
 			func() {
-				var pathToFail string
-				jig.Update(func(ing *extensions.Ingress) {
-					newRules := []extensions.IngressRule{}
-					for _, rule := range ing.Spec.Rules {
-						if rule.Host != updateURLMapHost {
-							newRules = append(newRules, rule)
-							continue
-						}
-						existingPath := rule.IngressRuleValue.HTTP.Paths[0]
-						pathToFail = existingPath.Path
-						newRules = append(newRules, extensions.IngressRule{
-							Host: updateURLMapHost,
-							IngressRuleValue: extensions.IngressRuleValue{
-								HTTP: &extensions.HTTPIngressRuleValue{
-									Paths: []extensions.HTTPIngressPath{
-										{
-											Path:    updateURLMapPath,
-											Backend: existingPath.Backend,
-										},
-									},
-								},
-							},
-						})
-					}
-					ing.Spec.Rules = newRules
-				})
-				By("Checking that " + pathToFail + " is not exposed by polling for failure")
-				route := fmt.Sprintf("http://%v%v", jig.Address, pathToFail)
+				previousPath := jig.UpdateHostPath(updateURLMapHost, updateURLMapPath)
+				By("Checking that " + previousPath + " is not exposed by polling for failure")
+				route := fmt.Sprintf("http://%v%v", jig.Address, previousPath)
 				ExpectNoError(PollURL(route, updateURLMapHost, LoadBalancerCleanupTimeout, jig.PollInterval, &http.Client{Timeout: IngressReqTimeout}, true))
 			},
 			fmt.Sprintf("Waiting for path updates to reflect in L7"),
 		},
 	}
+}
+
+// generateTestIngressSpec generates a basic ingress spec for testing.
+func generateTestIngressSpec(nameSuffix string) *extensions.Ingress {
+	return &extensions.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fmt.Sprintf("echomap-%s", nameSuffix),
+		},
+		Spec: extensions.IngressSpec{
+			Rules: []extensions.IngressRule{
+				{
+					Host: "foo.bar.com",
+					IngressRuleValue: extensions.IngressRuleValue{
+						HTTP: &extensions.HTTPIngressRuleValue{
+							Paths: []extensions.HTTPIngressPath{
+								{
+									Path: "/foo",
+									Backend: extensions.IngressBackend{
+										ServiceName: "echoheadersx",
+										ServicePort: intstr.IntOrString{
+											Type:   intstr.Int,
+											IntVal: 80,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				{
+					Host: "bar.baz.com",
+					IngressRuleValue: extensions.IngressRuleValue{
+						HTTP: &extensions.HTTPIngressRuleValue{
+							Paths: []extensions.HTTPIngressPath{
+								{
+									Path: "/bar",
+									Backend: extensions.IngressBackend{
+										ServiceName: "echoheadersy",
+										ServicePort: intstr.IntOrString{
+											Type:   intstr.Int,
+											IntVal: 80,
+										},
+									},
+								},
+								{
+									Path: "/foo",
+									Backend: extensions.IngressBackend{
+										ServiceName: "echoheadersx",
+										ServicePort: intstr.IntOrString{
+											Type:   intstr.Int,
+											IntVal: 80,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func generateTestServiceSpecs() []*v1.Service {
+	return []*v1.Service{
+		&v1.Service{},
+		&v1.Service{},
+	}
+}
+
+func generateTestDeploymentSpec() *extensions.Deployment {
+	return &extensions.Deployment{}
 }
 
 // generateRSACerts generates a basic self signed certificate using a key length
@@ -973,6 +1005,37 @@ func (j *IngressTestJig) Update(update func(ing *extensions.Ingress)) {
 	Failf("too many retries updating ingress %q", name)
 }
 
+// UpdateHostPath updates a host/path of the ingress.
+func (j *IngressTestJig) UpdateHostPath(updateURLMapHost, updateURLMapPath string) string {
+	previousPath := ""
+	j.Update(func(ing *extensions.Ingress) {
+		newRules := []extensions.IngressRule{}
+		for _, rule := range ing.Spec.Rules {
+			if rule.Host != updateURLMapHost {
+				newRules = append(newRules, rule)
+				continue
+			}
+			existingPath := rule.IngressRuleValue.HTTP.Paths[0]
+			previousPath = existingPath.Path
+			newRules = append(newRules, extensions.IngressRule{
+				Host: updateURLMapHost,
+				IngressRuleValue: extensions.IngressRuleValue{
+					HTTP: &extensions.HTTPIngressRuleValue{
+						Paths: []extensions.HTTPIngressPath{
+							{
+								Path:    updateURLMapPath,
+								Backend: existingPath.Backend,
+							},
+						},
+					},
+				},
+			})
+		}
+		ing.Spec.Rules = newRules
+	})
+	return previousPath
+}
+
 // AddHTTPS updates the ingress to use this secret for these hosts.
 func (j *IngressTestJig) AddHTTPS(secretName string, hosts ...string) {
 	j.Ingress.Spec.TLS = []extensions.IngressTLS{{Hosts: hosts, SecretName: secretName}}
@@ -985,6 +1048,25 @@ func (j *IngressTestJig) AddHTTPS(secretName string, hosts ...string) {
 		ing.Spec.TLS = []extensions.IngressTLS{{Hosts: hosts, SecretName: secretName}}
 	})
 	j.RootCAs[secretName] = cert
+}
+
+// UpdateHTTPS updates the secret hostname of the ingress.
+func (j *IngressTestJig) UpdateHTTPS(secretName, tlsHost, updatedTLSHost string) {
+	j.Update(func(ing *extensions.Ingress) {
+		newRules := []extensions.IngressRule{}
+		for _, rule := range ing.Spec.Rules {
+			if rule.Host != tlsHost {
+				newRules = append(newRules, rule)
+				continue
+			}
+			newRules = append(newRules, extensions.IngressRule{
+				Host:             updatedTLSHost,
+				IngressRuleValue: rule.IngressRuleValue,
+			})
+		}
+		ing.Spec.Rules = newRules
+	})
+	j.AddHTTPS(secretName, updatedTLSHost)
 }
 
 // GetRootCA returns a rootCA from the ingress test jig.
