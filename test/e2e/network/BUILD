@@ -16,6 +16,7 @@ go_library(
         "firewall.go",
         "framework.go",
         "ingress.go",
+        "ingress_scale.go",
         "kube_proxy.go",
         "network_policy.go",
         "network_tiers.go",

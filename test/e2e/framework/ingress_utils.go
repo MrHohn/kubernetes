@@ -329,10 +329,8 @@ func createIngressTLSSecret(kubeClient clientset.Interface, ing *extensions.Ingr
 	return host, cert, key, err
 }
 
-// CleanupGCEIngressController calls the GCEIngressController.Cleanup(false)
-// followed with deleting the static ip, and then a final GCEIngressController.Cleanup(true)
-func CleanupGCEIngressController(gceController *GCEIngressController) {
-	pollErr := wait.Poll(5*time.Second, LoadBalancerCleanupTimeout, func() (bool, error) {
+func CleanupGCEIngressControllerWithTimeout(gceController *GCEIngressController, timeout time.Duration) {
+	pollErr := wait.Poll(5*time.Second, timeout, func() (bool, error) {
 		if err := gceController.Cleanup(false); err != nil {
 			Logf("Monitoring glbc's cleanup of gce resources:\n%v", err)
 			return false, nil
@@ -370,6 +368,12 @@ func CleanupGCEIngressController(gceController *GCEIngressController) {
 	if pollErr != nil {
 		Logf("error: L7 controller failed to delete all cloud resources on time. %v", pollErr)
 	}
+}
+
+// CleanupGCEIngressController calls the GCEIngressController.Cleanup(false)
+// followed with deleting the static ip, and then a final GCEIngressController.Cleanup(true)
+func CleanupGCEIngressController(gceController *GCEIngressController) {
+	CleanupGCEIngressControllerWithTimeout(gceController, LoadBalancerCleanupTimeout)
 }
 
 func (cont *GCEIngressController) ListGlobalForwardingRules() []*compute.ForwardingRule {
@@ -1103,9 +1107,20 @@ func (j *IngressTestJig) GetRootCA(secretName string) (rootCA []byte) {
 
 // TryDeleteIngress attempts to delete the ingress resource and logs errors if they occur.
 func (j *IngressTestJig) TryDeleteIngress() {
-	err := j.Client.ExtensionsV1beta1().Ingresses(j.Ingress.Namespace).Delete(j.Ingress.Name, nil)
+	j.TryDeleteGivenIngress(j.Ingress)
+}
+
+func (j *IngressTestJig) TryDeleteGivenIngress(ing *extensions.Ingress) {
+	err := j.Client.ExtensionsV1beta1().Ingresses(ing.Namespace).Delete(ing.Name, nil)
 	if err != nil {
-		Logf("Error while deleting the ingress %v/%v: %v", j.Ingress.Namespace, j.Ingress.Name, err)
+		Logf("Error while deleting the ingress %v/%v: %v", ing.Namespace, ing.Name, err)
+	}
+}
+
+func (j *IngressTestJig) TryDeleteGivenService(svc *v1.Service) {
+	err := j.Client.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+	if err != nil {
+		Logf("Error while deleting the service %v/%v: %v", svc.Namespace, svc.Name, err)
 	}
 }
 
@@ -1115,33 +1130,40 @@ func (j *IngressTestJig) TryDeleteIngress() {
 // verifying the Ingress. NodePort is currently a requirement for cloudprovider
 // Ingress.
 func (j *IngressTestJig) WaitForIngress(waitForNodePort bool) {
+	j.WaitForGivenIngress(j.Ingress, waitForNodePort)
+}
+
+func (j *IngressTestJig) WaitForGivenIngress(ing *extensions.Ingress, waitForNodePort bool) {
+	j.WaitForGivenIngressWithTimeout(ing, waitForNodePort, LoadBalancerPollTimeout)
+}
+
+func (j *IngressTestJig) WaitForGivenIngressWithTimeout(ing *extensions.Ingress, waitForNodePort bool, timeout time.Duration) {
 	// Wait for the loadbalancer IP.
-	address, err := WaitForIngressAddress(j.Client, j.Ingress.Namespace, j.Ingress.Name, LoadBalancerPollTimeout)
+	address, err := WaitForIngressAddress(j.Client, ing.Namespace, ing.Name, timeout)
 	if err != nil {
-		Failf("Ingress failed to acquire an IP address within %v", LoadBalancerPollTimeout)
+		Failf("Ingress failed to acquire an IP address within %v", timeout)
 	}
-	j.Address = address
-	Logf("Found address %v for ingress %v", j.Address, j.Ingress.Name)
+	Logf("Found address %v for ingress %v", address, ing.Name)
 	timeoutClient := &http.Client{Timeout: IngressReqTimeout}
 
 	// Check that all rules respond to a simple GET.
-	for _, rules := range j.Ingress.Spec.Rules {
+	for _, rules := range ing.Spec.Rules {
 		proto := "http"
-		if len(j.Ingress.Spec.TLS) > 0 {
-			knownHosts := sets.NewString(j.Ingress.Spec.TLS[0].Hosts...)
+		if len(ing.Spec.TLS) > 0 {
+			knownHosts := sets.NewString(ing.Spec.TLS[0].Hosts...)
 			if knownHosts.Has(rules.Host) {
-				timeoutClient.Transport, err = buildTransportWithCA(rules.Host, j.GetRootCA(j.Ingress.Spec.TLS[0].SecretName))
+				timeoutClient.Transport, err = buildTransportWithCA(rules.Host, j.GetRootCA(ing.Spec.TLS[0].SecretName))
 				ExpectNoError(err)
 				proto = "https"
 			}
 		}
 		for _, p := range rules.IngressRuleValue.HTTP.Paths {
 			if waitForNodePort {
-				j.pollServiceNodePort(j.Ingress.Namespace, p.Backend.ServiceName, int(p.Backend.ServicePort.IntVal))
+				j.pollServiceNodePort(ing.Namespace, p.Backend.ServiceName, int(p.Backend.ServicePort.IntVal))
 			}
 			route := fmt.Sprintf("%v://%v%v", proto, address, p.Path)
 			Logf("Testing route %v host %v with simple GET", route, rules.Host)
-			ExpectNoError(PollURL(route, rules.Host, LoadBalancerPollTimeout, j.PollInterval, timeoutClient, false))
+			ExpectNoError(PollURL(route, rules.Host, timeout, j.PollInterval, timeoutClient, false))
 		}
 	}
 }

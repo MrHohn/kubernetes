@@ -107,3 +107,18 @@ func StatefulSetFromManifest(fileName, ns string) (*apps.StatefulSet, error) {
 	}
 	return &ss, nil
 }
+
+// SecretFromManifest reads a .json/yaml file and returns the secret in it.
+func SecretFromManifest(fileName string) (*v1.Secret, error) {
+	var secret v1.Secret
+	data := generated.ReadOrDie(fileName)
+
+	json, err := utilyaml.ToJSON(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := runtime.DecodeInto(legacyscheme.Codecs.UniversalDecoder(), json, &secret); err != nil {
+		return nil, err
+	}
+	return &secret, nil
+}
