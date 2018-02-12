@@ -37,6 +37,8 @@ go_library(
         "//pkg/cloudprovider/providers/gce:go_default_library",
         "//pkg/controller/endpoint:go_default_library",
         "//pkg/kubelet/apis:go_default_library",
+        "//pkg/kubelet/apis/cri/runtime/v1alpha2:go_default_library",
+        "//pkg/kubelet/network/dns:go_default_library",
         "//pkg/master/ports:go_default_library",
         "//test/e2e/framework:go_default_library",
         "//test/e2e/manifest:go_default_library",

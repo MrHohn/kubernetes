@@ -161,7 +161,7 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 	}
 	defer f.Close()
 
-	_, hostSearch, _, err := parseResolvConf(f)
+	_, hostSearch, _, err := ParseResolvConf(f)
 	if err != nil {
 		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
 		glog.Error("CheckLimitsForResolvConf: " + err.Error())
@@ -191,9 +191,9 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 	return
 }
 
-// parseResolveConf reads a resolv.conf file from the given reader, and parses
+// ParseResolvConf reads a resolv.conf file from the given reader, and parses
 // it into nameservers, searches and options, possibly returning an error.
-func parseResolvConf(reader io.Reader) (nameservers []string, searches []string, options []string, err error) {
+func ParseResolvConf(reader io.Reader) (nameservers []string, searches []string, options []string, err error) {
 	file, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return nil, nil, nil, err
@@ -243,7 +243,7 @@ func (c *Configurer) getHostDNSConfig(pod *v1.Pod) (*runtimeapi.DNSConfig, error
 		}
 		defer f.Close()
 
-		hostDNS, hostSearch, hostOptions, err = parseResolvConf(f)
+		hostDNS, hostSearch, hostOptions, err = ParseResolvConf(f)
 		if err != nil {
 			return nil, err
 		}
@@ -281,9 +281,9 @@ func getPodDNSType(pod *v1.Pod) (podDNSType, error) {
 	return podDNSCluster, fmt.Errorf(fmt.Sprintf("invalid DNSPolicy=%v", dnsPolicy))
 }
 
-// Merge DNS options. If duplicated, entries given by PodDNSConfigOption will
+// MergeDNSOptions merges DNS options. If duplicated, entries given by PodDNSConfigOption will
 // overwrite the existing ones.
-func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.PodDNSConfigOption) []string {
+func MergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.PodDNSConfigOption) []string {
 	optionsMap := make(map[string]string)
 	for _, op := range existingDNSConfigOptions {
 		if index := strings.Index(op, ":"); index != -1 {
@@ -317,7 +317,7 @@ func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.Po
 func appendDNSConfig(existingDNSConfig *runtimeapi.DNSConfig, dnsConfig *v1.PodDNSConfig) *runtimeapi.DNSConfig {
 	existingDNSConfig.Servers = omitDuplicates(append(existingDNSConfig.Servers, dnsConfig.Nameservers...))
 	existingDNSConfig.Searches = omitDuplicates(append(existingDNSConfig.Searches, dnsConfig.Searches...))
-	existingDNSConfig.Options = mergeDNSOptions(existingDNSConfig.Options, dnsConfig.Options)
+	existingDNSConfig.Options = MergeDNSOptions(existingDNSConfig.Options, dnsConfig.Options)
 	return existingDNSConfig
 }
 
@@ -396,7 +396,7 @@ func (c *Configurer) SetupDNSinContainerizedMounter(mounterPath string) {
 		if err != nil {
 			glog.Error("Could not open resolverConf file")
 		} else {
-			_, hostSearch, _, err := parseResolvConf(f)
+			_, hostSearch, _, err := ParseResolvConf(f)
 			if err != nil {
 				glog.Errorf("Error for parsing the reslov.conf file: %v", err)
 			} else {

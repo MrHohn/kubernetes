@@ -80,7 +80,7 @@ func TestParseResolvConf(t *testing.T) {
 		{"nameserver 1.2.3.4\nsearch foo\nnameserver 5.6.7.8\nsearch bar\noptions ndots:5 attempts:4", []string{"1.2.3.4", "5.6.7.8"}, []string{"bar"}, []string{"ndots:5", "attempts:4"}},
 	}
 	for i, tc := range testCases {
-		ns, srch, opts, err := parseResolvConf(strings.NewReader(tc.data))
+		ns, srch, opts, err := ParseResolvConf(strings.NewReader(tc.data))
 		require.NoError(t, err)
 		assert.EqualValues(t, tc.nameservers, ns, "test case [%d]: name servers", i)
 		assert.EqualValues(t, tc.searches, srch, "test case [%d] searches", i)
@@ -247,10 +247,10 @@ func TestMergeDNSOptions(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		options := mergeDNSOptions(tc.existingDNSConfigOptions, tc.dnsConfigOptions)
+		options := MergeDNSOptions(tc.existingDNSConfigOptions, tc.dnsConfigOptions)
 		// Options order may be changed after conversion.
 		if !sets.NewString(options...).Equal(sets.NewString(tc.expectedOptions...)) {
-			t.Errorf("%s: mergeDNSOptions(%v, %v)=%v, want %v", tc.desc, tc.existingDNSConfigOptions, tc.dnsConfigOptions, options, tc.expectedOptions)
+			t.Errorf("%s: MergeDNSOptions(%v, %v)=%v, want %v", tc.desc, tc.existingDNSConfigOptions, tc.dnsConfigOptions, options, tc.expectedOptions)
 		}
 	}
 }
