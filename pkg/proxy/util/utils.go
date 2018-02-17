@@ -17,9 +17,12 @@ limitations under the License.
 package util
 
 import (
+	"fmt"
 	"net"
 
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/apis/core/helper"
 
@@ -55,4 +58,13 @@ func ShouldSkipService(svcName types.NamespacedName, service *api.Service) bool 
 		return true
 	}
 	return false
+}
+
+func IsIPv6(netIP net.IP) bool {
+	return netIP != nil && netIP.To4() == nil
+}
+
+func IsIPv6String(ip string) bool {
+	netIP := net.ParseIP(ip)
+	return IsIPv6(netIP)
 }
