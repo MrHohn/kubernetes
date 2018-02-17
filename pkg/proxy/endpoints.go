@@ -206,6 +206,13 @@ func (ect *EndpointChangeTracker) endpointsToEndpointsMap(endpoints *api.Endpoin
 					glog.Warningf("ignoring invalid endpoint port %s with empty host", port.Name)
 					continue
 				}
+				// Filter out the incorrect IP version case.
+				if ect.isIPv6Mode != nil && utilproxy.IsIPv6String(addr.IP) != *ect.isIPv6Mode {
+					// Note: Put in an empty UID here because we'd like to emit event on
+					// the corresponding service, which has a different UID than endpoints.
+					utilproxy.LogAndEmitIncorrectIPVersionEvent(ect.recorder, "endpoints", addr.IP, endpoints.Name, endpoints.Namespace, "")
+					continue
+				}
 				isLocal := addr.NodeName != nil && *addr.NodeName == ect.hostname
 				epInfoCommon := newEndpointInfoCommon(addr.IP, int(port.Port), isLocal)
 				if ect.customizeEndpointInfo != nil {
