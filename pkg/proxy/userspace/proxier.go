@@ -35,7 +35,7 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
-	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
+	utilproxy "k8s.io/kubernetes/pkg/proxy/util"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	utilexec "k8s.io/utils/exec"
 )
@@ -507,7 +507,7 @@ func (proxier *Proxier) unmergeService(service *api.Service, existingPorts sets.
 		proxier.loadBalancer.DeleteService(serviceName)
 	}
 	for _, svcIP := range staleUDPServices.UnsortedList() {
-		if err := proxyutil.ClearUDPConntrackForIP(proxier.exec, svcIP); err != nil {
+		if err := utilproxy.ClearUDPConntrackForIP(proxier.exec, svcIP); err != nil {
 			glog.Errorf("Failed to delete stale service IP %s connections, error: %v", svcIP, err)
 		}
 	}
@@ -589,7 +589,7 @@ func (proxier *Proxier) openPortal(service proxy.ServicePortName, info *ServiceI
 }
 
 func (proxier *Proxier) openOnePortal(portal portal, protocol api.Protocol, proxyIP net.IP, proxyPort int, name proxy.ServicePortName) error {
-	if local, err := proxyutil.IsLocalIP(portal.ip.String()); err != nil {
+	if local, err := utilproxy.IsLocalIP(portal.ip.String()); err != nil {
 		return fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err)
 	} else if local {
 		err := proxier.claimNodePort(portal.ip, portal.port, protocol, name)
@@ -768,7 +768,7 @@ func (proxier *Proxier) closePortal(service proxy.ServicePortName, info *Service
 func (proxier *Proxier) closeOnePortal(portal portal, protocol api.Protocol, proxyIP net.IP, proxyPort int, name proxy.ServicePortName) []error {
 	el := []error{}
 
-	if local, err := proxyutil.IsLocalIP(portal.ip.String()); err != nil {
+	if local, err := utilproxy.IsLocalIP(portal.ip.String()); err != nil {
 		el = append(el, fmt.Errorf("can't determine if IP %s is local, assuming not: %v", portal.ip, err))
 	} else if local {
 		if err := proxier.releaseNodePort(portal.ip, portal.port, protocol, name); err != nil {
@@ -968,7 +968,7 @@ func iptablesCommonPortalArgs(destIP net.IP, addPhysicalInterfaceMatch bool, add
 	}
 
 	if destIP != nil {
-		args = append(args, "-d", proxyutil.ToCIDR(destIP))
+		args = append(args, "-d", utilproxy.ToCIDR(destIP))
 	}
 
 	if addPhysicalInterfaceMatch {
