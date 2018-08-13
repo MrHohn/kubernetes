@@ -70,13 +70,13 @@ function config-ip-firewall {
 
   if [[ "${NON_MASQUERADE_CIDR:-}" == "0.0.0.0/0" ]]; then
     echo "Add rules for ip masquerade"
-    iptables -w -t nat -N IP-MASQ
-    iptables -w -t nat -A POSTROUTING -m comment --comment "ip-masq: ensure nat POSTROUTING directs all non-LOCAL destination traffic to our custom IP-MASQ chain" -m addrtype ! --dst-type LOCAL -j IP-MASQ
-    iptables -w -t nat -A IP-MASQ -d 169.254.0.0/16 -m comment --comment "ip-masq: local traffic is not subject to MASQUERADE" -j RETURN
-    iptables -w -t nat -A IP-MASQ -d 10.0.0.0/8 -m comment --comment "ip-masq: local traffic is not subject to MASQUERADE" -j RETURN
-    iptables -w -t nat -A IP-MASQ -d 172.16.0.0/12 -m comment --comment "ip-masq: local traffic is not subject to MASQUERADE" -j RETURN
-    iptables -w -t nat -A IP-MASQ -d 192.168.0.0/16 -m comment --comment "ip-masq: local traffic is not subject to MASQUERADE" -j RETURN
-    iptables -w -t nat -A IP-MASQ -m comment --comment "ip-masq: outbound traffic is subject to MASQUERADE (must be last in chain)" -j MASQUERADE
+    iptables -w -t nat -N IP-MASQ-AGENT
+    iptables -w -t nat -A POSTROUTING -m comment --comment "ip-masq-agent: ensure nat POSTROUTING directs all non-LOCAL destination traffic to our custom IP-MASQ-AGENT chain" -m addrtype ! --dst-type LOCAL -j IP-MASQ
+    iptables -w -t nat -A IP-MASQ-AGENT -d 169.254.0.0/16 -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE" -j RETURN
+    iptables -w -t nat -A IP-MASQ-AGENT -d 10.0.0.0/8 -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE" -j RETURN
+    iptables -w -t nat -A IP-MASQ-AGENT -d 172.16.0.0/12 -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE" -j RETURN
+    iptables -w -t nat -A IP-MASQ-AGENT -d 192.168.0.0/16 -m comment --comment "ip-masq-agent: local traffic is not subject to MASQUERADE" -j RETURN
+    iptables -w -t nat -A IP-MASQ-AGENT -m comment --comment "ip-masq-agent: outbound traffic is subject to MASQUERADE (must be last in chain)" -j MASQUERADE
   fi
 
   # If METADATA_CONCEALMENT_NO_FIREWALL is set, don't create a firewall on this
