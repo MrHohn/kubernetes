@@ -18,7 +18,6 @@ package v1alpha1
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +25,7 @@ import (
 	kubeproxyconfigv1alpha1 "k8s.io/kube-proxy/config/v1alpha1"
 	"k8s.io/kubernetes/pkg/kubelet/qos"
 	"k8s.io/kubernetes/pkg/master/ports"
+	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
 	"k8s.io/utils/pointer"
 )
 
@@ -39,13 +39,13 @@ func SetDefaults_KubeProxyConfiguration(obj *kubeproxyconfigv1alpha1.KubeProxyCo
 	}
 	if obj.HealthzBindAddress == "" {
 		obj.HealthzBindAddress = fmt.Sprintf("0.0.0.0:%v", ports.ProxyHealthzPort)
-	} else if !strings.Contains(obj.HealthzBindAddress, ":") {
-		obj.HealthzBindAddress += fmt.Sprintf(":%v", ports.ProxyHealthzPort)
+	} else {
+		obj.HealthzBindAddress = proxyutil.AppendPortIfNeeded(obj.HealthzBindAddress, ports.ProxyHealthzPort)
 	}
 	if obj.MetricsBindAddress == "" {
 		obj.MetricsBindAddress = fmt.Sprintf("127.0.0.1:%v", ports.ProxyStatusPort)
-	} else if !strings.Contains(obj.MetricsBindAddress, ":") {
-		obj.MetricsBindAddress += fmt.Sprintf(":%v", ports.ProxyStatusPort)
+	} else {
+		obj.MetricsBindAddress = proxyutil.AppendPortIfNeeded(obj.MetricsBindAddress, ports.ProxyStatusPort)
 	}
 	if obj.OOMScoreAdj == nil {
 		temp := int32(qos.KubeProxyOOMScoreAdj)
