@@ -165,7 +165,7 @@ func TestCreateExternalLoadBalancer(t *testing.T) {
 			continue
 		}
 		client.ClearActions()
-		err := controller.syncLoadBalancerIfNeeded(key, item.service)
+		err := controller.syncLoadBalancerIfNeeded(item.service, key)
 		if !item.expectErr && err != nil {
 			t.Errorf("unexpected error: %v", err)
 		} else if item.expectErr && err == nil {
@@ -420,8 +420,7 @@ func TestProcessServiceUpdate(t *testing.T) {
 		if _, err := client.CoreV1().Services(tc.svc.Namespace).Create(tc.svc); err != nil {
 			t.Fatalf("Failed to prepare service %s for testing: %v", tc.key, err)
 		}
-		svcCache := controller.cache.getOrCreate(tc.key)
-		obtErr := controller.processServiceUpdate(svcCache, newSvc, tc.key)
+		obtErr := controller.processServiceUpdate(newSvc, tc.key)
 		if err := tc.expectedFn(newSvc, obtErr); err != nil {
 			t.Errorf("%v processServiceUpdate() %v", tc.testName, err)
 		}
@@ -441,8 +440,7 @@ func TestConflictWhenProcessServiceUpdate(t *testing.T) {
 		return true, update.GetObject(), apierrors.NewConflict(action.GetResource().GroupResource(), svcName, errors.New("Object changed"))
 	})
 
-	svcCache := controller.cache.getOrCreate(svcName)
-	if err := controller.processServiceUpdate(svcCache, svc, svcName); err == nil {
+	if err := controller.processServiceUpdate(svc, svcName); err == nil {
 		t.Fatalf("controller.processServiceUpdate() = nil, want error")
 	}
 

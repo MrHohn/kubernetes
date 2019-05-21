@@ -237,18 +237,16 @@ func (s *ServiceController) init() error {
 
 // processServiceUpdate operates loadbalancers for the incoming service accordingly.
 // Returns an error if processing the service update failed.
-func (s *ServiceController) processServiceUpdate(cachedService *cachedService, service *v1.Service, key string) error {
-	if cachedService.state != nil {
-		if cachedService.state.UID != service.UID {
-			err := s.processLoadBalancerDelete(cachedService, key)
-			if err != nil {
-				return err
-			}
+func (s *ServiceController) processServiceUpdate(service *v1.Service, key string) error {
+	cachedService := s.cache.getOrCreate(key)
+	if cachedService.state != nil && cachedService.state.UID != service.UID {
+		if err := s.processLoadBalancerDeletion(cachedService.state, key); err != nil {
+			return err
 		}
 	}
 	// cache the service, we need the info for service deletion
 	cachedService.state = service
-	err := s.syncLoadBalancerIfNeeded(key, service)
+	err := s.syncLoadBalancerIfNeeded(service, key)
 	if err != nil {
 		eventType := "CreatingLoadBalancerFailed"
 		message := "Error creating load balancer (will retry): "
@@ -272,7 +270,7 @@ func (s *ServiceController) processServiceUpdate(cachedService *cachedService, s
 // syncLoadBalancerIfNeeded ensures that service's status is synced up with loadbalancer
 // i.e. creates loadbalancer for service if requested and deletes loadbalancer if the service
 // doesn't want a loadbalancer no more. Returns whatever error occurred.
-func (s *ServiceController) syncLoadBalancerIfNeeded(key string, service *v1.Service) error {
+func (s *ServiceController) syncLoadBalancerIfNeeded(service *v1.Service, key string) error {
 	// Note: It is safe to just call EnsureLoadBalancer.  But, on some clouds that requires a delete & create,
 	// which may involve service interruption.  Also, we would like user-friendly events.
 
@@ -287,12 +285,9 @@ func (s *ServiceController) syncLoadBalancerIfNeeded(key string, service *v1.Ser
 			return fmt.Errorf("error getting LB for service %s: %v", key, err)
 		}
 		if exists {
-			klog.Infof("Deleting existing load balancer for service %s that no longer needs a load balancer.", key)
-			s.eventRecorder.Event(service, v1.EventTypeNormal, "DeletingLoadBalancer", "Deleting load balancer")
-			if err := s.balancer.EnsureLoadBalancerDeleted(context.TODO(), s.clusterName, service); err != nil {
+			if err := s.processLoadBalancerDeletion(service, key); err != nil {
 				return err
 			}
-			s.eventRecorder.Event(service, v1.EventTypeNormal, "DeletedLoadBalancer", "Deleted load balancer")
 		}
 
 		newState = &v1.LoadBalancerStatus{}
@@ -677,7 +672,6 @@ func loadBalancerIPsAreEqual(oldService, newService *v1.Service) bool {
 // invoked concurrently with the same key.
 func (s *ServiceController) syncService(key string) error {
 	startTime := time.Now()
-	var cachedService *cachedService
 	defer func() {
 		klog.V(4).Infof("Finished syncing service %q (%v)", key, time.Since(startTime))
 	}()
@@ -695,10 +689,9 @@ func (s *ServiceController) syncService(key string) error {
 		klog.Infof("Service has been deleted %v. Attempting to cleanup load balancer resources", key)
 		err = s.processServiceDeletion(key)
 	case err != nil:
-		klog.Infof("Unable to retrieve service %v from store: %v", key, err)
+		klog.Errorf("Unable to retrieve service %v from store: %v", key, err)
 	default:
-		cachedService = s.cache.getOrCreate(key)
-		err = s.processServiceUpdate(cachedService, service, key)
+		err = s.processServiceUpdate(service, key)
 	}
 
 	return err
@@ -713,15 +706,15 @@ func (s *ServiceController) processServiceDeletion(key string) error {
 		klog.Errorf("service %s not in cache even though the watcher thought it was. Ignoring the deletion", key)
 		return nil
 	}
-	return s.processLoadBalancerDelete(cachedService, key)
-}
-
-func (s *ServiceController) processLoadBalancerDelete(cachedService *cachedService, key string) error {
-	service := cachedService.state
-	// delete load balancer info only if the service type is LoadBalancer
-	if !wantsLoadBalancer(service) {
+	// Delete load balancer info only if the service type was LoadBalancer.
+	if !wantsLoadBalancer(cachedService.state) {
 		return nil
 	}
+	return s.processLoadBalancerDeletion(cachedService.state, key)
+}
+
+func (s *ServiceController) processLoadBalancerDeletion(service *v1.Service, key string) error {
+	klog.Infof("Deleting existing load balancer for service %s that no longer needs a load balancer.", key)
 	s.eventRecorder.Event(service, v1.EventTypeNormal, "DeletingLoadBalancer", "Deleting load balancer")
 	err := s.balancer.EnsureLoadBalancerDeleted(context.TODO(), s.clusterName, service)
 	if err != nil {
